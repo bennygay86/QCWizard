@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
+
+# Generated icon intermediates (kept: wizard_hat.png, wizard_hat.ico)
+wizard_hat.iconset/
+wizard_hat.icns
+
+# User config (written next to .exe at runtime)
+reference_config.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/

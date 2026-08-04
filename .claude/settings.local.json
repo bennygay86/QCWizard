@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip show *)",
+      "Bash(cd /d \"D:\\\\UM\\\\Tools\\\\CernakQCWizard\")",
+      "Bash(python make_icon.py)",
+      "PowerShell(python make_icon.py)"
+    ]
+  }
+}
