@@ -24,8 +24,18 @@ try:
     import matplotlib.ticker as mticker
     matplotlib.rcParams.update({"font.size": 9, "axes.titlesize": 10})
     HAS_MPL = True
-except ImportError:
+except Exception as _mpl_err:
     HAS_MPL = False
+    try:
+        import traceback as _tb
+        _log_dir = pathlib.Path(sys.executable).parent if getattr(sys, "frozen", False) \
+                   else pathlib.Path(__file__).parent
+        (_log_dir / "mpl_debug.txt").write_text(
+            f"{type(_mpl_err).__name__}: {_mpl_err}\n\n{_tb.format_exc()}",
+            encoding="utf-8"
+        )
+    except Exception:
+        pass
 
 # ---------------------------------------------------------------------------
 # Comparison specification
@@ -66,6 +76,7 @@ def _app_dir() -> pathlib.Path:
 
 
 CONFIG_PATH = _app_dir() / "reference_config.json"
+ANNOTATIONS_PATH = _app_dir() / "annotations.json"
 MAX_CSV_BYTES = 10 * 1024 * 1024
 CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
@@ -176,6 +187,49 @@ def cfg_set_ref(config, instrument, path: str):
 
 def cfg_set_report_dir(config, instrument, directory: str):
     _instrument_block(config, instrument)["report_dir"] = directory
+
+
+# ---------------------------------------------------------------------------
+# Annotations (chart markers for events like cleaning, column change, etc.)
+#
+# Storage format (annotations.json):
+# {
+#   "Colorado": [
+#     {"date": "2026-08-04", "label": "Cleaned QDa", "note": "Deep clean per protocol"},
+#     ...
+#   ]
+# }
+# ---------------------------------------------------------------------------
+
+def load_annotations() -> dict:
+    if ANNOTATIONS_PATH.exists():
+        try:
+            data = json.loads(ANNOTATIONS_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    return {}
+
+
+def save_annotations(data: dict) -> None:
+    try:
+        ANNOTATIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        ANNOTATIONS_PATH.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False),
+            encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+
+def annotations_for(data: dict, instrument: str) -> list:
+    """Return the list of annotations for one instrument (creates it if missing)."""
+    lst = data.get(instrument)
+    if not isinstance(lst, list):
+        lst = []
+        data[instrument] = lst
+    return lst
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +365,7 @@ class QCWizardApp(tk.Tk):
         self.qc_path_var    = tk.StringVar(value="(none)")
         self.instrument_var = tk.StringVar(value=INSTRUMENTS[0])
         self.ref_config     = load_ref_config()
+        self.annotations    = load_annotations()
 
         self._setup_style()
 
@@ -1200,6 +1255,13 @@ class TrendsPage(tk.Frame):
                       padx=10, pady=4),
             bg=STEEL, active=PURP_DARK
         ).pack(side="left", padx=(8, 0))
+        polish_button(
+            tk.Button(title_row, text="📝  Notes",
+                      command=self._open_notes_dialog,
+                      font=("Segoe UI", 9),
+                      padx=10, pady=4),
+            bg=ORANGE, active="#d97706"
+        ).pack(side="left", padx=(8, 0))
         self._ilabel = tk.Label(header, text="",
                                  font=("Segoe UI", 11, "bold"), bg=DARK, fg=MUTED_DARK)
         self._ilabel.pack(pady=(4, 0))
@@ -1302,6 +1364,7 @@ class TrendsPage(tk.Frame):
         ax.tick_params(colors=TEXT)
         for spine in ax.spines.values():
             spine.set_color(BORDER)
+        self._draw_annotations(ax)
         fig.tight_layout(pad=1.8)
         canvas.draw()
 
@@ -1393,8 +1456,209 @@ class TrendsPage(tk.Frame):
         ax.tick_params(colors=TEXT)
         for spine in ax.spines.values():
             spine.set_color(BORDER)
+        self._draw_annotations(ax)
         fig.tight_layout(pad=1.8)
         canvas.draw()
+
+    # ── Annotations (chart markers) ────────────────────────────────────
+    def _get_annotations(self) -> list:
+        return annotations_for(self._app.annotations, self._instrument)
+
+    def _draw_annotations(self, ax):
+        anns = self._get_annotations()
+        if not anns:
+            return
+        for ann in anns:
+            try:
+                dt = datetime.strptime(ann.get("date", ""), "%Y-%m-%d")
+            except ValueError:
+                continue
+            ax.axvline(dt, color=ORANGE, linestyle="--",
+                       linewidth=1.3, alpha=0.7, zorder=2)
+            label = ann.get("label", "") or ""
+            if label:
+                ax.text(dt, 0.985, f" {label} ",
+                        transform=ax.get_xaxis_transform(),
+                        rotation=90, ha="right", va="top",
+                        fontsize=8, color="#7a3f00",
+                        fontweight="bold",
+                        bbox=dict(facecolor="#fff3d6", edgecolor=ORANGE,
+                                  linewidth=0.6, boxstyle="round,pad=0.2",
+                                  alpha=0.9))
+
+    # ── Notes dialog ───────────────────────────────────────────────────
+    def _open_notes_dialog(self):
+        if not self._instrument:
+            return
+
+        dlg = tk.Toplevel(self)
+        dlg.title(f"Annotations — {self._instrument}")
+        dlg.configure(bg=BG)
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        # Header
+        hdr = tk.Frame(dlg, bg=DARK, pady=8)
+        hdr.pack(fill="x")
+        tk.Label(hdr, text=f"📝  Chart Annotations — {self._instrument}",
+                 bg=DARK, fg="white",
+                 font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=12)
+
+        body = tk.Frame(dlg, bg=BG, padx=14, pady=12)
+        body.pack(fill="both", expand=True)
+
+        # ── Existing annotations list ────────────────────────────────
+        list_lf = tk.LabelFrame(body, text="  Existing  ",
+                                 font=("Segoe UI", 9, "bold"),
+                                 bg=PANEL, fg=PURP_DARK,
+                                 padx=8, pady=8,
+                                 highlightbackground=BORDER,
+                                 highlightcolor=BORDER,
+                                 highlightthickness=1, bd=0)
+        list_lf.pack(fill="x", pady=(0, 12))
+
+        cols = ("date", "label", "note")
+        tree = ttk.Treeview(list_lf, columns=cols, show="headings",
+                             height=7, selectmode="browse")
+        for col, hdr_txt, w in zip(cols,
+                                    ("Date", "Label", "Note"),
+                                    (100, 180, 320)):
+            tree.heading(col, text=hdr_txt)
+            tree.column(col, width=w, anchor="w", minwidth=60)
+        vsb = ttk.Scrollbar(list_lf, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        tree.pack(fill="x", expand=True)
+
+        def _reload_list():
+            for iid in tree.get_children():
+                tree.delete(iid)
+            anns = sorted(self._get_annotations(),
+                          key=lambda a: a.get("date", ""))
+            for i, a in enumerate(anns):
+                tree.insert("", "end", iid=str(i),
+                             values=(a.get("date", ""),
+                                     a.get("label", ""),
+                                     a.get("note", "")))
+
+        _reload_list()
+
+        del_row = tk.Frame(list_lf, bg=PANEL)
+        del_row.pack(fill="x", pady=(6, 0))
+
+        def _delete_selected():
+            sel = tree.selection()
+            if not sel:
+                return
+            idx = int(sel[0])
+            anns = sorted(self._get_annotations(),
+                          key=lambda a: a.get("date", ""))
+            if 0 <= idx < len(anns):
+                target = anns[idx]
+                lst = self._get_annotations()
+                try:
+                    lst.remove(target)
+                except ValueError:
+                    return
+                save_annotations(self._app.annotations)
+                _reload_list()
+                self._refresh_all()
+
+        polish_button(
+            tk.Button(del_row, text="🗑  Delete Selected",
+                      command=_delete_selected,
+                      font=("Segoe UI", 9), padx=10, pady=4),
+            bg=RED, active="#b8264f"
+        ).pack(side="right")
+
+        # ── Add-new form ─────────────────────────────────────────────
+        add_lf = tk.LabelFrame(body, text="  Add New  ",
+                                font=("Segoe UI", 9, "bold"),
+                                bg=PANEL, fg=PURP_DARK,
+                                padx=10, pady=10,
+                                highlightbackground=BORDER,
+                                highlightcolor=BORDER,
+                                highlightthickness=1, bd=0)
+        add_lf.pack(fill="x")
+
+        date_var  = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
+        label_var = tk.StringVar()
+        note_var  = tk.StringVar()
+
+        def _row(parent, label, var, width=30, hint=""):
+            row = tk.Frame(parent, bg=PANEL)
+            row.pack(fill="x", pady=3)
+            tk.Label(row, text=label, font=("Segoe UI", 9, "bold"),
+                     bg=PANEL, fg=TEXT, width=8, anchor="e"
+                     ).pack(side="left")
+            entry = tk.Entry(row, textvariable=var, width=width,
+                             font=("Segoe UI", 9),
+                             bg="white", fg=TEXT,
+                             relief="flat",
+                             highlightbackground=BORDER,
+                             highlightthickness=1)
+            entry.pack(side="left", padx=(6, 6))
+            if hint:
+                tk.Label(row, text=hint, font=("Segoe UI", 8, "italic"),
+                         bg=PANEL, fg=MUTED).pack(side="left")
+            return entry
+
+        _row(add_lf, "Date:",  date_var,  width=14, hint="YYYY-MM-DD")
+        _row(add_lf, "Label:", label_var, width=40,
+             hint="short — shown on chart (e.g. Cleaned QDa)")
+        _row(add_lf, "Note:",  note_var,  width=60,
+             hint="optional details")
+
+        def _add():
+            date_s = date_var.get().strip()
+            label  = label_var.get().strip()
+            note   = note_var.get().strip()
+            try:
+                datetime.strptime(date_s, "%Y-%m-%d")
+            except ValueError:
+                messagebox.showwarning("Invalid Date",
+                                        "Please enter the date as YYYY-MM-DD.",
+                                        parent=dlg)
+                return
+            if not label:
+                messagebox.showwarning("Missing Label",
+                                        "Please enter a short label for the annotation.",
+                                        parent=dlg)
+                return
+            self._get_annotations().append(
+                {"date": date_s, "label": label, "note": note}
+            )
+            save_annotations(self._app.annotations)
+            label_var.set("")
+            note_var.set("")
+            _reload_list()
+            self._refresh_all()
+
+        btn_row = tk.Frame(add_lf, bg=PANEL)
+        btn_row.pack(fill="x", pady=(8, 0))
+        polish_button(
+            tk.Button(btn_row, text="＋  Add Annotation",
+                      command=_add,
+                      font=("Segoe UI", 9, "bold"), padx=12, pady=5),
+            bg=PURP, active=PURP_DARK
+        ).pack(side="right")
+
+        # Close
+        foot = tk.Frame(dlg, bg=BG, pady=10)
+        foot.pack(fill="x")
+        polish_button(
+            tk.Button(foot, text="Close", width=10,
+                      command=dlg.destroy,
+                      font=("Segoe UI", 9, "bold")),
+            bg=STEEL, active=PURP_DARK
+        ).pack()
+
+        dlg.update_idletasks()
+        pw, ph = self.winfo_width(), self.winfo_height()
+        px, py = self.winfo_rootx(), self.winfo_rooty()
+        dw, dh = dlg.winfo_width(), dlg.winfo_height()
+        dlg.geometry(f"+{px + (pw - dw)//2}+{py + (ph - dh)//2}")
+        dlg.wait_window()
 
 
 # ---------------------------------------------------------------------------
