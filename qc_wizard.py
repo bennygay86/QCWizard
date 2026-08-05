@@ -1468,16 +1468,25 @@ class TrendsPage(tk.Frame):
         anns = self._get_annotations()
         if not anns:
             return
+        # Group same-date annotations so their labels stack instead of overlap.
+        by_date = {}
         for ann in anns:
             try:
                 dt = datetime.strptime(ann.get("date", ""), "%Y-%m-%d")
             except ValueError:
                 continue
+            by_date.setdefault(dt, []).append(ann)
+
+        Y_TOP  = 0.985
+        Y_STEP = 0.13   # axes-fraction per stacked label (fontsize 8, rotation 90)
+        for dt, group in by_date.items():
             ax.axvline(dt, color=ORANGE, linestyle="--",
                        linewidth=1.3, alpha=0.7, zorder=2)
-            label = ann.get("label", "") or ""
-            if label:
-                ax.text(dt, 0.985, f" {label} ",
+            for i, ann in enumerate(group):
+                label = ann.get("label", "") or ""
+                if not label:
+                    continue
+                ax.text(dt, Y_TOP - i * Y_STEP, f" {label} ",
                         transform=ax.get_xaxis_transform(),
                         rotation=90, ha="right", va="top",
                         fontsize=8, color="#7a3f00",
